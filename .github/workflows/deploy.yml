@@ -11,7 +11,7 @@ jobs:
   deploy:
     uses: acs-lambda/.github/.github/workflows/deploy-lambda.yml@main
     with:
-      function-name: aws-lambda-function-name-here   # ← Change this to the AWS Lambda Function Name!
+      function-name: ProcessNewUserSupabase   # ← Change this to the AWS Lambda Function Name!
       region: us-east-2                 # optional
     secrets:
       GHA_AWS_ROLE_ARN: ${{ secrets.GHA_AWS_ROLE_ARN }}
