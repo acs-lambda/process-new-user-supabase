@@ -23,7 +23,7 @@
  */
 
 import crypto from "crypto";
-import { DynamoDBClient, PutItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, PutItemCommand, ScanCommand } from "@aws-sdk/client-dynamodb";
 import {
   CognitoIdentityProviderClient,
   AdminCreateUserCommand,
@@ -192,6 +192,52 @@ async function verifyCaptcha(token) {
 }
 
 /**
+ * Generate a unique email by appending random digits if the base email exists.
+ * @param {string} baseEmail - The base email to check
+ * @returns {Promise<string>} - A unique email
+ */
+async function generateUniqueEmail(baseEmail) {
+  const baseName = baseEmail.split('@')[0];
+  const domain = baseEmail.split('@')[1];
+  
+  // Check if the base email exists
+  const listResp = await dynamoDb.send(new ScanCommand({
+    TableName: "Users",
+    FilterExpression: "acsMail = :email",
+    ExpressionAttributeValues: {
+      ":email": { S: baseEmail }
+    }
+  }));
+
+  if (!listResp.Items?.length) {
+    return baseEmail;
+  }
+
+  // If exists, append random digits until we find a unique one
+  let attempts = 0;
+  let newEmail;
+  do {
+    const randomDigits = Math.floor(Math.random() * 10000).toString().padStart(4, '0');
+    newEmail = `${baseName}${randomDigits}@${domain}`;
+    
+    const checkResp = await dynamoDb.send(new ScanCommand({
+      TableName: "Users",
+      FilterExpression: "acsMail = :email",
+      ExpressionAttributeValues: {
+        ":email": { S: newEmail }
+      }
+    }));
+    
+    attempts++;
+    if (attempts > 10) {
+      throw new Error("Failed to generate unique email after 10 attempts");
+    }
+  } while (listResp.Items?.length > 0);
+
+  return newEmail;
+}
+
+/**
  * AWS Lambda handler for user signup.
  *
  * @param {object} event            - API Gateway event.
@@ -236,7 +282,8 @@ export const handler = async (event) => {
   }
 
   // Build internal response email
-  const responseEmail = `${name.replace(/\s+/g, "").toLowerCase()}@homes.automatedconsultancy.com`;
+  const baseResponseEmail = `${name.replace(/\s+/g, "").toLowerCase()}@homes.automatedconsultancy.com`;
+  const responseEmail = await generateUniqueEmail(baseResponseEmail);
 
   // Default email signature
   const defaultSignature = `Best Regards,\n${name}\n${email}`;
