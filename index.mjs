@@ -416,6 +416,7 @@ export const handler = async (event) => {
         message: provider === PROVIDERS.FORM
           ? "User created & signed in"
           : "Google user created & signed in",
+        authtype: "new"
       }),
     };
 
