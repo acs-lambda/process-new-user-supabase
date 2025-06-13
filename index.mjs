@@ -367,7 +367,9 @@ export const handler = async (event) => {
         provider:      { S: provider },
         createdAt:     { S: new Date().toISOString() },
         role:          { S: "user" },
-        email_signature: { S: defaultSignature }
+        email_signature: { S: defaultSignature },
+        rl_aws:        { N: "1000" },
+        rl_ai:         { N: "100" }
       },
     }));
 
