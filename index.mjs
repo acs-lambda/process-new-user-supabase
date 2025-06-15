@@ -1,25 +1,73 @@
 /**
- * @file signup.js
- * @module signup
+ * @file process-new-user-supabase.mjs
+ * @module ProcessNewUserSupabase
  * @description
  * AWS Lambda handler for user signup in ACS.
  * Supports two providers: "form" (email/password + reCAPTCHA) and "google" (OAuth).
- *
+ * 
+ * Payload Format:
+ * {
+ *   id: string,           // Required: User's unique identifier
+ *   email: string,        // Required: User's email address
+ *   name: string,         // Required: User's full name
+ *   provider: string,     // Required: "form" or "google"
+ *   password?: string,    // Required for "form" provider
+ *   captchaToken?: string // Required for "form" provider
+ * }
+ * 
+ * Functionality:
  * - FORM signups:
  *   • Verify CAPTCHA
  *   • Create Cognito user (suppressed invite)
  *   • Permanently set password
- *   • Authenticate via USER_PASSWORD_AUTH (InitiateAuthCommand)
- *   • Persist user & session to DynamoDB
+ *   • Authenticate via USER_PASSWORD_AUTH
+ *   • Create session via CreateNewSession Lambda
  *   • Issue Cognito tokens + session cookie
- *
+ * 
  * - GOOGLE signups:
  *   • Generate random password
  *   • Create Cognito user (suppressed invite) with email_verified=true
  *   • Permanently set password
- *   • Persist user & session to DynamoDB
+ *   • Create session via CreateNewSession Lambda
  *   • Issue only session cookie
- *
+ * 
+ * Return Codes:
+ * 200: Success - User created and signed in
+ * 201: Success - User created and signed in (alternative success code)
+ * 400: Bad Request - Missing required fields or invalid payload
+ * 401: Unauthorized - CAPTCHA verification failed
+ * 409: Conflict - User already exists
+ * 429: Too Many Requests - CAPTCHA score too low
+ * 500: Internal Server Error - Server-side error occurred
+ * 
+ * Response Format:
+ * Success (200/201):
+ * {
+ *   message: string,      // Success message
+ *   authType: string,     // "new" or "existing"
+ *   headers: {
+ *     "Set-Cookie": string[] // Array of cookies for FORM, single cookie for GOOGLE
+ *   }
+ * }
+ * 
+ * Error (400/401/409/429/500):
+ * {
+ *   message: string,      // Error description
+ *   errorCodes?: string[], // For CAPTCHA errors
+ *   score?: number        // For CAPTCHA score errors
+ * }
+ * 
+ * Cookies:
+ * - FORM signup: session_id, id_token, access_token, refresh_token
+ * - GOOGLE signup: session_id only
+ * 
+ * All cookies are:
+ * - HttpOnly
+ * - Secure
+ * - SameSite=None
+ * - Max-Age=2592000 (30 days) for session_id
+ * - Max-Age=3600 (1 hour) for id_token and access_token
+ * - Max-Age=1209600 (14 days) for refresh_token
  */
 
 import crypto from "crypto";
@@ -32,6 +80,7 @@ import {
   ListUsersCommand
 } from "@aws-sdk/client-cognito-identity-provider";
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
+import { invoke, parseEvent } from './utils.mjs';
 
 // ── CONFIG ────────────────────────────────────────────────────────────────
 const REGION           = process.env.AWS_REGION      || "us-east-2";
@@ -39,6 +88,8 @@ const USER_POOL_ID     = process.env.COGNITO_USER_POOL_ID;
 const CLIENT_ID        = process.env.COGNITO_CLIENT_ID;
 const CLIENT_SECRET    = process.env.COGNITO_CLIENT_SECRET;
 const RECAPTCHA_SECRET = process.env.RECAPTCHA_SECRET_KEY;
+const RATE_LIMIT_AWS   = process.env.RATE_LIMIT_AWS || "1000";  // Default AWS rate limit
+const RATE_LIMIT_AI    = process.env.RATE_LIMIT_AI  || "100";   // Default AI rate limit
 
 // Validate environment variables
 if (!USER_POOL_ID || !CLIENT_ID || !CLIENT_SECRET || !RECAPTCHA_SECRET) {
@@ -87,37 +138,28 @@ function generateRandomPassword() {
 }
 
 /**
- * Generate a unique session identifier.
- * @returns {string}
- */
-function generateSessionId() {
-  const timestamp = Date.now();
-  const randomStr = Math.random().toString(36).substring(2, 10);
-  return `${timestamp}-${randomStr}`;
-}
-
-/**
- * Persist a session record in DynamoDB.
+ * Create a new session by invoking the CreateNewSession lambda.
  *
  * @param {string} uid           - User's unique ID (email).
- * @param {string} responseEmail - Generated internal response email.
  * @returns {Promise<string>}    - The new session ID.
  */
 async function addSession(uid, responseEmail) {
-  const sessionId = generateSessionId();
-  const nowSec    = Math.floor(Date.now() / 1000);
-  const ttl       = nowSec + 30 * 24 * 3600; // 30 days
-  await dynamoDb.send(new PutItemCommand({
-    TableName: "Sessions",
-    Item: {
-      session_id:     { S: sessionId },
-      created_at:     { S: new Date().toISOString() },
-      expiration:     { N: ttl.toString() },
-      response_email: { S: responseEmail },
-      user_id:        { S: uid },
-    },
-  }));
-  return sessionId;
+  try {
+    const response = await invoke('CreateNewSession', {
+      body: JSON.stringify({ uid })
+    });
+
+    if (response.statusCode !== 200) {
+      const body = JSON.parse(response.body);
+      throw new Error(body.message || "Failed to create session");
+    }
+
+    const body = JSON.parse(response.body);
+    return body.sessionId;
+  } catch (error) {
+    console.error("Error creating session:", error);
+    throw new Error("Failed to create session: " + error.message);
+  }
 }
 
 /**
@@ -240,10 +282,7 @@ async function generateUniqueEmail(baseEmail) {
 /**
  * AWS Lambda handler for user signup.
  *
- * @param {object} event            - API Gateway event.
- * @param {string} event.httpMethod - "OPTIONS" or "POST".
- * @param {string} event.body       - JSON string with:
- *   { id, email, password?, name, captchaToken?, provider }
+ * @param {object} event - API Gateway event.
  * @returns {Promise<object>} API Gateway response.
  */
 export const handler = async (event) => {
@@ -254,16 +293,17 @@ export const handler = async (event) => {
     return { statusCode: 200, headers: cors, body: "" };
   }
 
-  // Parse + validate payload
+  // Parse + validate payload using utility function
   let id, email, password, name, captchaToken, provider;
   try {
-    const b = JSON.parse(event.body || "{}");
-    console.log("Payload received: ", b);
-    ({ id, email, password, name, captchaToken, provider } = b);
+    const parsedEvent = parseEvent(event);
+    console.log("Parsed event:", parsedEvent);
+    
+    ({ id, email, password, name, captchaToken, provider } = parsedEvent);
 
     if (!id || !email || !name || !provider) {
       throw new Error("Missing required fields: id, email, name, or provider");
-          }
+    }
     if (provider === PROVIDERS.FORM && !captchaToken) {
       throw new Error("Captcha token is required for form signup");
     }
@@ -368,8 +408,8 @@ export const handler = async (event) => {
         createdAt:     { S: new Date().toISOString() },
         role:          { S: "user" },
         email_signature: { S: defaultSignature },
-        rl_aws:        { N: "1000" },
-        rl_ai:         { N: "100" }
+        rl_aws:        { N: RATE_LIMIT_AWS },
+        rl_ai:         { N: RATE_LIMIT_AI }
       },
     }));
 
