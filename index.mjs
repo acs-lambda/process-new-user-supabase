@@ -74,32 +74,76 @@ import { createResponse, LambdaError, parseEvent } from './utils.mjs';
 import { processNewUser } from './user_processor.mjs';
 
 export const handler = async (event) => {
+  const corsHeaders = {
+    "Access-Control-Allow-Origin": process.env.ALLOWED_ORIGIN || "*",
+    "Access-Control-Allow-Methods": "OPTIONS, POST",
+    "Access-Control-Allow-Headers": "Content-Type",
+    "Access-Control-Allow-Credentials": "true",
+  };
+
   try {
     if (event.httpMethod === "OPTIONS") {
-      return createResponse(200, "", {
-        "Access-Control-Allow-Methods": "OPTIONS, POST",
-        "Access-Control-Allow-Headers": "Content-Type",
-        "Access-Control-Allow-Credentials": "true",
-      });
+      return createResponse(200, "", corsHeaders);
     }
 
     const payload = await parseEvent(event);
     
+    // Validate required fields
     const { id, email, name, provider, password, captchaToken } = payload;
     if (!id || !email || !name || !provider) {
-        throw new LambdaError("Missing required fields: id, email, name, or provider", 400);
+      throw new LambdaError("Missing required fields: id, email, name, or provider", 400);
     }
     if (provider === "form" && (!password || !captchaToken)) {
-        throw new LambdaError("Password and captcha token are required for form signup", 400);
+      throw new LambdaError("Password and captcha token are required for form signup", 400);
+    }
+    if (provider !== "form" && provider !== "google") {
+      throw new LambdaError("Provider must be either 'form' or 'google'", 400);
     }
 
-    const result = await processNewUser({ id, email, password, name, captchaToken, provider });
+    // Process the new user
+    const result = await processNewUser({ 
+      id, 
+      email, 
+      password, 
+      name, 
+      captchaToken, 
+      provider 
+    });
 
-    return createResponse(201, { message: result.message, authType: result.authType }, { "Set-Cookie": result.cookies.join(',') });
+    // Format cookies properly for the Set-Cookie header
+    const cookieHeader = result.cookies.map(cookie => cookie.trim()).join('; ');
+    
+    return createResponse(
+      201, 
+      { 
+        message: result.message, 
+        authType: result.authType 
+      }, 
+      {
+        ...corsHeaders,
+        "Set-Cookie": cookieHeader
+      }
+    );
 
   } catch (error) {
     console.error("Signup error:", error);
-    const statusCode = error instanceof LambdaError ? error.statusCode : 500;
-    return createResponse(statusCode, { message: error.message });
+    
+    // Handle specific error cases
+    let statusCode = 500;
+    let errorResponse = { message: "Internal server error" };
+
+    if (error instanceof LambdaError) {
+      statusCode = error.statusCode;
+      errorResponse = { 
+        message: error.message,
+        ...(error.errorCodes && { errorCodes: error.errorCodes }),
+        ...(error.score !== undefined && { score: error.score })
+      };
+    } else if (error.name === "ValidationError") {
+      statusCode = 400;
+      errorResponse = { message: error.message };
+    }
+
+    return createResponse(statusCode, errorResponse, corsHeaders);
   }
 };
