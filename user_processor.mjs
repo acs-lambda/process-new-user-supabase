@@ -30,7 +30,7 @@ function generateRandomPassword() {
 
 async function addSession(uid) {
   try {
-    const response = await invokeLambda('create-new-session', { body: JSON.stringify({ uid }) });
+    const response = await invokeLambda('CreateNewSession', { body: JSON.stringify({ uid }) });
     const body = JSON.parse(response.body);
     return body.sessionId;
   } catch (error) {
