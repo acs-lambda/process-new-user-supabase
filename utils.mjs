@@ -1,12 +1,13 @@
 import { LambdaClient, InvokeCommand } from "@aws-sdk/client-lambda";
 import { DynamoDBClient, GetItemCommand } from "@aws-sdk/client-dynamodb";
 import { unmarshall } from "@aws-sdk/util-dynamodb";
+import { LOG_LEVEL } from './config.mjs';
 
 // Configure logging
 const logger = {
-  info: (...args) => console.log("[INFO]", ...args),
+  info: (...args) => LOG_LEVEL === 'info' && console.log("[INFO]", ...args),
   error: (...args) => console.error("[ERROR]", ...args),
-  warning: (...args) => console.warn("[WARN]", ...args)
+  warn: (...args) => console.warn("[WARN]", ...args)
 };
 
 // Initialize AWS clients
@@ -23,6 +24,26 @@ export class AuthorizationError extends Error {
   }
 }
 
+export class LambdaError extends Error {
+  constructor(message, statusCode = 500) {
+    super(message);
+    this.name = "LambdaError";
+    this.statusCode = statusCode;
+  }
+}
+
+export function createResponse(statusCode, body, headers = {}) {
+  return {
+    statusCode,
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+      ...headers,
+    },
+    body: JSON.stringify(body),
+  };
+}
+
 /**
  * Invoke a Lambda function by name with the given payload
  * @param {string} functionName - Name of the Lambda function to invoke
@@ -30,12 +51,12 @@ export class AuthorizationError extends Error {
  * @returns {Promise<Object>} Response from the Lambda function
  * @throws {Error} If Lambda invocation fails
  */
-export async function invoke(functionName, payload) {
+export async function invokeLambda(functionName, payload) {
   try {
     const command = new InvokeCommand({
       FunctionName: functionName,
       InvocationType: "RequestResponse",
-      Payload: JSON.stringify(payload)
+      Payload: JSON.stringify(payload),
     });
 
     const response = await lambdaClient.send(command);
@@ -43,13 +64,19 @@ export async function invoke(functionName, payload) {
 
     if (response.FunctionError) {
       logger.error(`Lambda function ${functionName} returned an error:`, responsePayload);
-      throw new Error(responsePayload.errorMessage || "Unknown error");
+      throw new LambdaError(responsePayload.errorMessage || "Unknown error", 500);
+    }
+    
+    if (responsePayload.statusCode && responsePayload.statusCode !== 200) {
+        const body = JSON.parse(responsePayload.body || '{}');
+        throw new LambdaError(body.message || 'Invocation failed', responsePayload.statusCode);
     }
 
     return responsePayload;
   } catch (error) {
+    if (error instanceof LambdaError) throw error;
     logger.error(`Failed to invoke Lambda function ${functionName}:`, error);
-    throw error;
+    throw new LambdaError(`Invocation of ${functionName} failed`, 500);
   }
 }
 
@@ -59,43 +86,9 @@ export async function invoke(functionName, payload) {
  * @returns {Object} Parsed event data including body and cookies if present
  * @throws {Error} If event parsing fails
  */
-export function parseEvent(event) {
-  try {
-    const parsedData = {};
-
-    // Check if this is an API Gateway event
-    if ('body' in event) {
-      // Parse the body if it's a string
-      if (typeof event.body === 'string') {
-        try {
-          Object.assign(parsedData, JSON.parse(event.body));
-        } catch {
-          // If body is not JSON, use it as is
-          parsedData.body = event.body;
-        }
-      } else {
-        Object.assign(parsedData, event.body);
-      }
-
-      // Handle cookies from API Gateway
-      if (event.headers?.Cookie) {
-        const cookies = event.headers.Cookie;
-        // Parse cookies into a dictionary
-        const cookieDict = Object.fromEntries(
-          cookies.split('; ').map(cookie => cookie.split('=', 2))
-        );
-        Object.assign(parsedData, cookieDict);
-      }
-    } else {
-      // Direct Lambda invocation - use event as is
-      Object.assign(parsedData, event);
-    }
-
-    return parsedData;
-  } catch (error) {
-    logger.error("Error parsing event:", error);
-    throw error;
-  }
+export async function parseEvent(event) {
+  const response = await invokeLambda('ParseEvent', event);
+  return JSON.parse(response.body || '{}');
 }
 
 /**
@@ -106,35 +99,5 @@ export function parseEvent(event) {
  * @throws {AuthorizationError} If authorization fails
  */
 export async function authorize(userId, sessionId) {
-  try {
-    if (!sessionId) {
-      throw new AuthorizationError("No session ID provided");
-    }
-
-    // Query the Sessions table
-    const command = new GetItemCommand({
-      TableName: "Sessions",
-      Key: { session_id: { S: sessionId } }
-    });
-
-    const response = await dynamoDb.send(command);
-    const session = response.Item ? unmarshall(response.Item) : null;
-
-    if (!session) {
-      logger.warning(`Session not found: ${sessionId}`);
-      throw new AuthorizationError("ACS: Unauthorized");
-    }
-
-    // Validate user_id matches session
-    if (session.associated_account !== userId) {
-      logger.warning(`User ID mismatch: ${userId} != ${session.associated_account}`);
-      throw new AuthorizationError("ACS: Unauthorized");
-    }
-  } catch (error) {
-    if (error instanceof AuthorizationError) {
-      throw error;
-    }
-    logger.error("Error during authorization:", error);
-    throw new AuthorizationError("ACS: Unauthorized");
-  }
+  await invokeLambda('Authorize', { user_id: userId, session_id: sessionId });
 } 
