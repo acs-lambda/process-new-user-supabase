@@ -49,6 +49,13 @@ async function verifyCaptcha(token) {
 }
 
 async function generateUniqueEmail(baseEmail) {
+    const listResp = await dynamoDb.send(new ScanCommand({
+        TableName: "Users",
+        FilterExpression: "acsMail = :email",
+        ExpressionAttributeValues: { ":email": { S: baseEmail } }
+    }));
+    if (!listResp.Items?.length) return baseEmail;
+
     const [baseName, domain] = baseEmail.split('@');
     let attempts = 0;
     while (attempts < 10) {
