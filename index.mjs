@@ -88,6 +88,10 @@ export const handler = async (event) => {
 
     const payload = await parseEvent(event);
     
+    // Debug logging to understand the payload structure
+    console.log("DEBUG: Raw event:", JSON.stringify(event, null, 2));
+    console.log("DEBUG: Parsed payload:", JSON.stringify(payload, null, 2));
+    
     // Validate required fields
     const { id, email, name, provider, password, captchaToken } = payload;
     if (!id || !email || !name || !provider) {

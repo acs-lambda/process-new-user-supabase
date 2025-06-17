@@ -66,6 +66,9 @@ async function generateUniqueEmail(baseEmail) {
 }
 
 export async function processNewUser({ id, email, password, name, captchaToken, provider }) {
+    // Debug logging to understand the data being passed
+    console.log("DEBUG: processNewUser called with:", { id, email, password, name, captchaToken, provider });
+    
     if (provider === "form") {
         await verifyCaptcha(captchaToken);
     }
@@ -89,6 +92,10 @@ export async function processNewUser({ id, email, password, name, captchaToken, 
     const responseEmail = await generateUniqueEmail(`${name.replace(/\s+/g, "").toLowerCase()}@homes.automatedconsultancy.com`);
     const defaultSignature = `Best Regards,\n${name}\n${email}`;
 
+    console.log("DEBUG: About to insert into Users table with data:", {
+        id, email, responseEmail, provider, defaultSignature
+    });
+
     await dynamoDb.send(new PutItemCommand({
       TableName: "Users",
       Item: {
@@ -97,6 +104,8 @@ export async function processNewUser({ id, email, password, name, captchaToken, 
         email_signature: { S: defaultSignature }, rl_aws: { N: RATE_LIMIT_AWS }, rl_ai: { N: RATE_LIMIT_AI }
       },
     }));
+
+    console.log("DEBUG: Successfully inserted user into Users table");
 
     let cookies;
     const sessionId = await addSession(id);
