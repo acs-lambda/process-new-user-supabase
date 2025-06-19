@@ -15,7 +15,7 @@ const CLIENT_ID = process.env.COGNITO_CLIENT_ID;
 const CLIENT_SECRET = process.env.COGNITO_CLIENT_SECRET;
 const RECAPTCHA_SECRET = process.env.RECAPTCHA_SECRET_KEY;
 const RATE_LIMIT_AWS = process.env.RATE_LIMIT_AWS || "1000";
-const RATE_LIMIT_AI = process.env.RATE_LIMIT_AI || "100";
+const RATE_LIMIT_AI = process.env.RATE_LIMIT_AI || "1000";
 
 const dynamoDb = new DynamoDBClient({ region: REGION });
 const cognitoClient = new CognitoIdentityProviderClient({ region: REGION });
@@ -108,7 +108,10 @@ export async function processNewUser({ id, email, password, name, captchaToken, 
       Item: {
         id: { S: id }, email: { S: email }, responseEmail: { S: responseEmail }, acsMail: { S: responseEmail },
         provider: { S: provider }, createdAt: { S: new Date().toISOString() }, role: { S: "user" },
-        email_signature: { S: defaultSignature }, rl_aws: { N: RATE_LIMIT_AWS }, rl_ai: { N: RATE_LIMIT_AI }
+        email_signature: { S: defaultSignature }, rl_aws: { N: RATE_LIMIT_AWS }, rl_ai: { N: RATE_LIMIT_AI }, bio: { S: "" },
+        company: { S: "" }, country: { S: "" }, data_sharing: { S: false }, email_notifications: { S: true }, job_title: { S: "" }, language: { S: "en" },
+        lcp_automatic_enabled: { S: "false" }, lcp_sample_prompt: { S: "" }, lcp_style: {S: "concise"}, lcp_tone: {S: "professional"},
+        location: { S: "" }, marketing_email: { S: "true" }, new_email: { S: "false" },phone: { S: "" }
       },
     }));
 
