@@ -109,7 +109,7 @@ export async function processNewUser({ id, email, password, name, captchaToken, 
         id: { S: id }, email: { S: email }, responseEmail: { S: responseEmail }, acsMail: { S: responseEmail },
         provider: { S: provider }, createdAt: { S: new Date().toISOString() }, role: { S: "user" },
         email_signature: { S: defaultSignature }, rl_aws: { N: RATE_LIMIT_AWS }, rl_ai: { N: RATE_LIMIT_AI }, bio: { S: "" },
-        company: { S: "" }, country: { S: "" }, data_sharing: { B: false }, email_notifications: { B: true }, job_title: { S: "" }, language: { S: "en" },
+        company: { S: "" }, country: { S: "" }, data_sharing: { BOOL: false }, email_notifications: { BOOL: true }, job_title: { S: "" }, language: { S: "en" },
         lcp_automatic_enabled: { S: "false" }, lcp_sample_prompt: { S: "" }, lcp_style: {S: "concise"}, lcp_tone: {S: "professional"},
         location: { S: "" }, marketing_email: { S: "true" }, new_email: { S: "false" },phone: { S: "" }
       },
@@ -144,3 +144,4 @@ export async function processNewUser({ id, email, password, name, captchaToken, 
         cookies
     };
 }
+    
